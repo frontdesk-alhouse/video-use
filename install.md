@@ -21,6 +21,8 @@ And one thing must be true about the current agent:
 
 4. It can discover `SKILL.md` — either via a global skills directory (`~/.claude/skills/`, `~/.codex/skills/`) or via a `CLAUDE.md` / system-prompt import.
 
+Optional: **Final Cut Pro mode** (step 6) — macOS with Final Cut Pro + SpliceKit. When its bridge answers, edits land as FCP projects and transcription runs on FCP's side; the ElevenLabs key becomes optional.
+
 ## Install prompt contract
 
 - Do everything yourself. Only ask the user for things you cannot generate — the ElevenLabs API key, and confirmation before `brew install`.
@@ -125,7 +127,39 @@ Scribe (ElevenLabs) does all transcription. Without a key, nothing transcribes.
 
     `200` means the key works. `401` means the user pasted a wrong/expired key — ask once more and stop. Anything else (network, 5xx), move on and verify during first real transcription.
 
-### 6. Verify end-to-end
+### 6. Final Cut Pro mode (optional, macOS)
+
+Skip on Linux or if the user doesn't edit in Final Cut. The ffmpeg path works without any of this.
+
+1. **SpliceKit + Final Cut Pro running.** SpliceKit (`/Applications/SpliceKit.app`) injects a JSON-RPC bridge into FCP on `127.0.0.1:9876`. Ask the user to open SpliceKit and launch Final Cut Pro through it. Verified on FCP 12.4 / SpliceKit 3.3.9.
+2. **Preflight:**
+
+    ```bash
+    python ~/Developer/video-use/helpers/fcp/bridge.py status
+    ```
+
+    Exit 0 prints FCP and SpliceKit versions. Exit 1 prints `bridge down → use helpers/render.py (ffmpeg path)` — FCP isn't running with SpliceKit injected. That's not an install failure; the skill falls back to ffmpeg per session.
+3. **SpliceKit MCP server** (optional, for interactive tools like `bridge_status`, `capture_viewer`). Check `~/.claude.json` for a `splicekit` entry; on this machine it already exists:
+
+    ```json
+    "splicekit": {
+      "type": "stdio",
+      "command": "/path/to/.venvs/splicekit-mcp/bin/python",
+      "args": ["/Applications/SpliceKit.app/Contents/Resources/mcp/server.py"]
+    }
+    ```
+
+    If it's missing, add it with that shape (the venv needs SpliceKit's MCP requirements). The helpers don't need it — they talk to the socket directly.
+4. **xmllint** for FCPXML DTD validation:
+
+    ```bash
+    command -v xmllint >/dev/null || brew install libxml2
+    ```
+
+5. **Transcription.** With the bridge up, `VIDEO_USE_STT=auto` (default) transcribes with SpliceKit's Parakeet engine — no API key. The ElevenLabs key from step 5 is optional then, but keep it if the user wants a fallback when FCP is closed (`VIDEO_USE_STT=scribe` forces it).
+6. **Automation permission.** The import (large XML) and export routes drive FCP's open/save panels with `osascript`. The first run triggers macOS prompts for Accessibility / Automation for the terminal running the agent — tell the user to allow them.
+
+### 7. Verify end-to-end
 
 Run one real thing. Prefer the lightest verification that still proves the pipeline is wired up:
 
@@ -136,7 +170,7 @@ ffprobe -version | head -1
 
 Full transcription test is optional at install time — it burns Scribe credits. Better to wait until the user hands you their first clip.
 
-### 7. Hand off
+### 8. Hand off
 
 Tell the user, in one short message:
 
@@ -144,6 +178,7 @@ Tell the user, in one short message:
 - That they should `cd` into their footage folder and start their agent there (e.g. `claude`).
 - That a good first message is: *"edit these into a launch video"* or *"inventory these takes and propose a strategy."*
 - That all outputs land in `<videos_dir>/edit/` — the repo stays clean.
+- Whether FCP mode is available (bridge preflight result), and that without it the skill uses ffmpeg.
 
 ## Keeping the skill current
 
@@ -158,5 +193,6 @@ Tell the user, in one short message:
 - `yt-dlp` is optional. Don't block install on it; install lazily the first time a user asks to pull from a URL.
 - Node.js/npm are only needed for HyperFrames or Remotion slots. HyperFrames currently requires Node.js 22+.
 - HyperFrames, Remotion, and Manim are optional animation engines. Don't install or prefer one globally during setup; pick the engine per animation slot in `SKILL.md`. HyperFrames can run through `npx --yes hyperframes ...` in the slot directory. Remotion can be scaffolded with `npx create-video@latest` or installed inside the slot before rendering.
-- Never run transcription as part of install verification unless the user explicitly asks — Scribe costs real money.
+- Never run transcription as part of install verification unless the user explicitly asks — Scribe costs real money, and the FCP provider creates an inventory project in the user's library.
+- FCP mode is per session, not per install: a down bridge today is fine. Don't try to launch or inject FCP yourself.
 - If the user is on Linux without a package manager Claude recognizes, print the manual `ffmpeg` install URL and wait rather than guessing.

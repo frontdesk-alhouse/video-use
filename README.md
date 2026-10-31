@@ -68,6 +68,10 @@ cp .env.example .env
 $EDITOR .env                    # ELEVENLABS_API_KEY=...
 ```
 
+## Final Cut Pro mode
+
+On macOS with Final Cut Pro and SpliceKit, the same EDL is built into an FCPXML project and imported into FCP — spine cuts with fades, beat markers, native captions, Color Adjustments grade, and connected overlays — then reconciled frame-by-frame against the plan and verified through a round-trip export. Transcription runs on SpliceKit's Parakeet engine, so no API key is needed. When the bridge isn't up, everything falls back to the ffmpeg path above. See [`helpers/fcp/README.md`](./helpers/fcp/README.md) and the FCP mode section of [`SKILL.md`](./SKILL.md).
+
 ## How it works
 
 The LLM never watches the video. It **reads** it — through two layers that together give it everything it needs to cut with word-boundary precision.
@@ -107,6 +111,6 @@ The self-eval loop runs `timeline_view` on the _rendered output_ at every cut bo
 2. **Audio is primary, visuals follow.** Cuts come from speech boundaries and silence gaps.
 3. **Ask → confirm → execute → self-eval → persist.** Never touch the cut without strategy approval.
 4. **Zero assumptions about content type.** Look, ask, then edit.
-5. **12 hard rules, artistic freedom elsewhere.** Production-correctness is non-negotiable. Taste isn't.
+5. **14 hard rules, artistic freedom elsewhere.** Production-correctness is non-negotiable. Taste isn't.
 
 See [`SKILL.md`](./SKILL.md) for the full production rules and editing craft.

@@ -22,7 +22,6 @@ import math
 import os
 import subprocess
 import sys
-import tempfile
 import time
 import wave
 from pathlib import Path
@@ -125,18 +124,30 @@ def transcript_path(edit_dir: Path, video: Path, audio_track: int = 0) -> Path:
     return edit_dir / "transcripts" / f"{video.stem}{suffix}.json"
 
 
+def save_transcript(out_path: Path, payload: dict, provider_name: str) -> Path:
+    """Write one transcript JSON, stamped with the provider that made it."""
+    if isinstance(payload, dict):
+        payload.setdefault("provider", {"name": provider_name})
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(payload, indent=2))
+    return out_path
+
+
 def transcribe_one(
     video: Path,
     edit_dir: Path,
-    api_key: str,
+    api_key: str | None = None,
     language: str | None = None,
     num_speakers: int | None = None,
     verbose: bool = True,
     audio_track: int = 0,
+    provider=None,
 ) -> Path:
     """Transcribe a single video. Returns path to transcript JSON.
 
     Cached: returns existing path immediately if the transcript already exists.
+    `provider` comes from `stt.resolve_provider()` (default: resolved here);
+    `api_key` is only used by the Scribe provider and kept for old callers.
     """
     transcripts_dir = edit_dir / "transcripts"
     transcripts_dir.mkdir(parents=True, exist_ok=True)
@@ -147,37 +158,19 @@ def transcribe_one(
             print(f"cached: {out_path.name}")
         return out_path
 
-    if verbose:
-        print(f"  extracting audio from {video.name}", flush=True)
+    if provider is None:
+        from stt import ScribeProvider, resolve_provider  # lazy: stt/scribe.py imports this module
+        provider = ScribeProvider(api_key) if api_key else resolve_provider()
 
-    n_tracks = count_audio_tracks(video)
-    if n_tracks > 1 and verbose:
-        print(f"  note: {video.name} has {n_tracks} audio tracks, using track "
-              f"{audio_track + 1} (--audio-track to change)", flush=True)
+    if verbose:
+        print(f"  transcribing {video.name} with {provider.name}", flush=True)
 
     t0 = time.time()
-    with tempfile.TemporaryDirectory() as tmp:
-        audio = Path(tmp) / f"{video.stem}.wav"
-        extract_audio(video, audio, audio_track)
-
-        # Uploading silence costs the same as uploading speech and returns
-        # nothing, so catch the wrong-track case before paying for it.
-        peak = peak_dbfs(audio)
-        if peak < -60.0:
-            raise RuntimeError(
-                f"track {audio_track + 1} of {video.name} is silent "
-                f"(peak {peak:.1f} dBFS) - not uploading. "
-                + (f"The file has {n_tracks} audio tracks; try --audio-track "
-                   + " or ".join(str(i) for i in range(n_tracks) if i != audio_track) + "."
-                   if n_tracks > 1 else "Check the source audio.")
-            )
-
-        size_mb = audio.stat().st_size / (1024 * 1024)
-        if verbose:
-            print(f"  uploading {video.stem}.wav ({size_mb:.1f} MB)", flush=True)
-        payload = call_scribe(audio, api_key, language, num_speakers)
-
-    out_path.write_text(json.dumps(payload, indent=2))
+    payload = provider.transcribe(
+        video, audio_track=audio_track, language=language,
+        num_speakers=num_speakers, verbose=verbose,
+    )
+    save_transcript(out_path, payload, provider.name)
     dt = time.time() - t0
 
     if verbose:
@@ -218,6 +211,13 @@ def main() -> None:
              "and the mic on track 1; without this ffmpeg applies its default audio "
              "stream selection, which picks the track with the most channels.",
     )
+    ap.add_argument(
+        "--provider",
+        choices=["auto", "fcp", "scribe"],
+        default=None,
+        help="Speech-to-text provider (default: $VIDEO_USE_STT or auto = FCP when "
+             "the SpliceKit bridge answers, else Scribe).",
+    )
     args = ap.parse_args()
 
     video = args.video.resolve()
@@ -225,12 +225,12 @@ def main() -> None:
         sys.exit(f"video not found: {video}")
 
     edit_dir = (args.edit_dir or (video.parent / "edit")).resolve()
-    api_key = load_api_key()
+    from stt import resolve_provider
 
     transcribe_one(
         video=video,
         edit_dir=edit_dir,
-        api_key=api_key,
+        provider=resolve_provider(args.provider),
         language=args.language,
         num_speakers=args.num_speakers,
         audio_track=args.audio_track,

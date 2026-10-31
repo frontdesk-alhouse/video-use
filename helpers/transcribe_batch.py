@@ -17,10 +17,10 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from transcribe import load_api_key, transcribe_one, transcript_path
+from stt import resolve_provider
+from transcribe import save_transcript, transcript_path
 
 
 VIDEO_EXTS = {".mp4", ".MP4", ".mov", ".MOV", ".mkv", ".MKV", ".avi", ".AVI", ".m4v"}
@@ -62,6 +62,12 @@ def main() -> None:
         default=0,
         help="Zero-based audio track to transcribe (OBS: 0 = game, 1 = mic).",
     )
+    ap.add_argument(
+        "--provider",
+        choices=["auto", "fcp", "scribe"],
+        default=None,
+        help="Speech-to-text provider (default: $VIDEO_USE_STT or auto).",
+    )
     args = ap.parse_args()
 
     videos_dir = args.videos_dir.resolve()
@@ -84,34 +90,40 @@ def main() -> None:
         print("nothing to do")
         return
 
-    api_key = load_api_key()
+    provider = resolve_provider(args.provider)
+    workers = args.workers if provider.supports_parallel else 1
 
-    print(f"transcribing {len(pending)} files with {args.workers} parallel workers")
+    print(f"transcribing {len(pending)} files with {workers} parallel workers")
     t0 = time.time()
 
     errors: list[tuple[Path, str]] = []
-    with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = {
-            pool.submit(
-                transcribe_one,
-                video=v,
-                edit_dir=edit_dir,
-                api_key=api_key,
-                language=args.language,
-                num_speakers=args.num_speakers,
-                verbose=False,
-                audio_track=args.audio_track,
-            ): v
-            for v in pending
-        }
-        for fut in as_completed(futures):
-            v = futures[fut]
-            try:
-                out = fut.result()
-                print(f"  + {v.stem}  →  {out.name}")
-            except Exception as e:
+
+    def on_done(v: Path, res: dict | Exception) -> None:
+        if isinstance(res, Exception):
+            errors.append((v, str(res)))
+            print(f"  x {v.stem}  FAILED: {res}")
+            return
+        out = save_transcript(transcript_path(edit_dir, v, args.audio_track), res, provider.name)
+        print(f"  + {v.stem}  →  {out.name}")
+
+    # One call for the whole batch: Scribe fans out to `workers` threads, FCP puts
+    # every pending take on one inventory timeline and transcribes it once.
+    try:
+        provider.transcribe_many(
+            pending,
+            audio_track=args.audio_track,
+            language=args.language,
+            num_speakers=args.num_speakers,
+            workers=workers,
+            on_done=on_done,
+        )
+    except Exception as e:
+        done = {v for v, _ in errors} | {v for v in pending
+                                         if transcript_path(edit_dir, v, args.audio_track).exists()}
+        for v in pending:
+            if v not in done:
                 errors.append((v, str(e)))
-                print(f"  x {v.stem}  FAILED: {e}")
+        print(f"  x batch FAILED: {e}")
 
     dt = time.time() - t0
     print(f"\ndone in {dt:.1f}s")

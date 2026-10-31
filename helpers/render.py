@@ -337,6 +337,9 @@ def extract_all_segments(
 
     ranges = edl["ranges"]
     sources = edl["sources"]
+    if any(range_kind(r) != "media" for r in ranges):
+        raise SystemExit("gap/card ranges are FCP-mode only (edl_to_fcpxml.py); "
+                         "the ffmpeg render path does not draw them yet")
 
     # Resolve ONE output frame rate for the entire render and apply it to every
     # segment. The lossless concat (Rule 2, `-c copy`) requires all segments to
@@ -465,6 +468,28 @@ def chunk_words(words: list[dict]) -> list[list[dict]]:
     return chunks
 
 
+def range_kind(r: dict) -> str:
+    """'gap' ({"gap": secs}), 'card' ({"card": {...}}) or 'media' (source/start/end)."""
+    if "gap" in r:
+        return "gap"
+    if "card" in r:
+        return "card"
+    return "media"
+
+
+DEFAULT_CARD_S = 3.0
+
+
+def range_duration(r: dict) -> float:
+    """Output seconds a range occupies, whatever its kind."""
+    kind = range_kind(r)
+    if kind == "gap":
+        return float(r["gap"])
+    if kind == "card":
+        return float((r["card"] or {}).get("duration", DEFAULT_CARD_S))
+    return float(r["end"]) - float(r["start"])
+
+
 def build_master_srt(edl: dict, edit_dir: Path, out_path: Path) -> None:
     """Build an output-timeline SRT from per-source transcripts.
 
@@ -479,6 +504,9 @@ def build_master_srt(edl: dict, edit_dir: Path, out_path: Path) -> None:
     seg_offset = 0.0
 
     for r in edl["ranges"]:
+        if range_kind(r) != "media":        # gap / card: no speech, just time
+            seg_offset += range_duration(r)
+            continue
         src_name = r["source"]
         seg_start = float(r["start"])
         seg_end = float(r["end"])
